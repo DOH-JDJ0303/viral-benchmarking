@@ -7,12 +7,7 @@ nextflow.enable.dsl = 2
     PIPELINE PARAMETERS
 =============================================================================================================================
 */
-// Define parameters
-params.input            = null
-params.outdir           = 'results'
-params.length_threshold = 1.2
-params.read_limit       = 1000000
-
+// Define results file
 def result_file = file(params.outdir).resolve('metrics.csv')
 
 // Check parameters
@@ -295,6 +290,8 @@ def fillMissingKeys(cols, row){
 */
 
 process MINIMAP2_ASM {
+    container 'docker.io/staphb/minimap2:2.28'
+
     input:
     tuple val(sample), path(assembly), path(truth)
 
@@ -308,6 +305,8 @@ process MINIMAP2_ASM {
 }
 
 process BEDTOOLS {
+    container 'docker.io/staphb/bedtools:2.31.1'
+
     input:
     tuple val(sample), val(bed), path(assembly)
 
@@ -322,6 +321,8 @@ process BEDTOOLS {
 }
 
 process NEXTCLADE {
+    container 'docker.io/nextstrain/nextclade:3.9.1'
+
     input:
     tuple val(sample), path(assembly), path(truth)
 
@@ -336,6 +337,8 @@ process NEXTCLADE {
 }
 
 process SEQTK_SAMPLE {
+    container 'docker.io/staphb/seqtk:1.4'
+
     input:
     tuple val(sample), path(reads), val(read_type)
 
@@ -361,6 +364,8 @@ process SEQTK_SAMPLE {
 }
 
 process BWA_MEM {
+    container 'quay.io/biocontainers/mulled-v2-fe8faa35dbf6dc65a0f7f5d4ea12e31a79f73e40:219b6c272b25e7e642ae3ff0bf0c5c81a5135ab4-0'
+
     input:
     tuple val(sample), path(reads), path(truth)
 
@@ -381,6 +386,8 @@ process BWA_MEM {
 }
 
 process MINIMAP2_MAP {
+    container 'docker.io/staphb/minimap2:2.28'
+
     input:
     tuple val(sample), path(reads), path(truth)
 
@@ -398,6 +405,8 @@ process MINIMAP2_MAP {
 }
 
 process SAMTOOLS_COVERAGE {
+    container 'docker.io/staphb/samtools:1.21'
+
     input:
     tuple val(sample), path(bam)
 
