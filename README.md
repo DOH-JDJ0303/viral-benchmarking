@@ -1,4 +1,4 @@
-# viral-benchmarking\
+# viral-benchmarking
 This is a temporary home for the viral assembly benchmarking script.
 
 # Dependencies
