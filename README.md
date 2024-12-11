@@ -1,5 +1,7 @@
 # viral-benchmarking
-This is a temporary home for the viral assembly benchmarking script.
+This is a temporary home for the PGCoE viral assembly benchmarking script. \
+\
+Check out the [wiki](https://github.com/DOH-JDJ0303/viral-benchmarking/wiki).
 
 # Dependencies
 - Nextflow
