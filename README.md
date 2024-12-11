@@ -7,7 +7,7 @@ This is a temporary home for the viral assembly benchmarking script.
 
 # Test
 Below are instructions for how to test the benchmarking tool. The test includes a reference-based assembly generated using the Twist Synthetic Influenza H1N1 (2009) RNA control (read more [here](https://www.twistbioscience.com/products/ngs/synthetic-viral-controls)). The assemblies used to create these synthetic controls were used as "truth" sequences (NC_026431, NC_026432, NC_026433, NC_026434, NC_026435, NC_026436, NC_026437, and NC_026438). The test sample was not particularly high quality, thus variable results are expected.
-## 1. Clone the repo
+### 1. Clone the repo
 ```
 git clone https://github.com/DOH-JDJ0303/viral-benchmarking
 ```
