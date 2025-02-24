@@ -47,15 +47,15 @@ workflow {
         .splitFasta(record: [id: true, seqString: true])
         .splitFasta(record: [id: true, seqString: true])
         .groupTuple(by: 0)
-        .map{ sample, sfa, tfa -> [ sample, [ slen: faLength(sfa), tlen: faLength(tfa) ] ] }
+        .map{ sample, sfa, tfa -> [ sample, [ sampleLength: faLength(sfa), truthLength: faLength(tfa) ] ] }
         .join( ch_input.map{ [ it.sample, it ] }, by: 0 )
         .map{ sample, lengths, inputs -> inputs + lengths }
         .branch{ it ->
-                 normal: it.slen <= params.length_threshold * it.tlen 
-                 toolong: it.slen > params.length_threshold * it.tlen 
+                 normal: it.sampleLength <= params.length_threshold * it.truthLength 
+                 toolong: it.sampleLength > params.length_threshold * it.truthLength 
                 }
         .set{ ch_input }
-
+    
     // Determine overlap between the truth and sample and select the sample contig with the longest alignment length
     // Uses contig name and start/stop location from PAF file to build a BED file for extraction
     MINIMAP2_ASM(
@@ -89,6 +89,7 @@ workflow {
         - Gather initial metrics using Nextclade
         - Capture any Nextclade errors
         - Account for unaligned sequences on the terminal ends (Nextlade ignores these)
+        - Account for "missing bases" introduced by the reference genome
         - Calculate accuracy and completeness
     =============================================================================================================================
     */
@@ -106,13 +107,13 @@ workflow {
     ch_nc
         .filter{ sample, item -> item.key == 'errors' }
         .map{ sample, item -> [ sample, item.value[0] ? item.value[0].errors[0] : null ]  }
-        .set{ ch_nc_errors }
+        .set{ ch_ncErrors }
     // Extract Nextclade results and gather assembly metrics
     ch_nc
         .filter{ sample, item -> item.key == 'results' }
-        .join( ch_input.map{ [ it.sample, it.slen, it.tlen ] }, by: 0 )
-        .join( ch_nc_errors, by: 0 )
-        .map{ sample, results, slen, tlen, nc_errors -> [ sample: sample, nc_errors: nc_errors, slen: slen ] + gatherMetrics(results + [ tlen: tlen ]) }
+        .join( ch_input.map{ [ it.sample, it.sampleLength, it.truthLength ] }, by: 0 )
+        .join( ch_ncErrors, by: 0 )
+        .map{ sample, results, sampleLength, truthLength, ncErrors -> [ sample: sample, ncErrors: ncErrors, sampleLength: sampleLength ] + gatherMetrics(results + [ truthLength: truthLength ]) }
         .set{ ch_assembly_metrics }
 
     /*
@@ -178,12 +179,12 @@ workflow {
         .join( ch_reads.map{ [ it.sample, it ] }, by: 0 )
         .map{ sample, coverage, read_info -> read_info + coverage }
         .map{ [ sample: it.sample, 
-                n_reads: it.n_reads_full, 
-                per_reads_mapped: ( 100 * it.numreads.toFloat() / it.n_reads ).round(),
-                read_cov: it.coverage.toFloat(),
-                mean_read_depth: ( it.meandepth.toFloat() / it.read_sample_rate ).round(), 
-                mean_read_q: it.meanbaseq.toFloat(), 
-                mean_map_q: it.meanmapq.toFloat() ] }
+                nReads: it.n_reads_full, 
+                perReadsMapped: ( 100 * it.numreads.toFloat() / it.n_reads ).round(),
+                readCov: it.coverage.toFloat(),
+                meanReadDepth: ( it.meandepth.toFloat() / it.read_sample_rate ).round(), 
+                meanReadQual: it.meanbaseq.toFloat(), 
+                meanMapQual: it.meanmapq.toFloat() ] }
         .set{ ch_read_metrics }
 
     /*
@@ -196,6 +197,10 @@ workflow {
         .map{ [ it.sample, it ] }
         .join( ch_read_metrics.map{ [ it.sample, it ] }, by: 0, remainder: true )
         .map{ sample, assembly_metrics, read_metrics -> assembly_metrics + ( read_metrics instanceof LinkedHashMap ? read_metrics : [ ] ) }
+        .map{ it.assembly = it.sample.seq
+              it.sample = it.sample.id
+              it 
+        }
         .set{ ch_all_metrics }
     // Get a list of linked hashmap keys across all samples and fill any missing keys in each sample with 'null'
     ch_all_metrics
@@ -232,12 +237,13 @@ def checkSampleSheet(LinkedHashMap row){
     
     // Check if input files exist
     def assembly = file(row.assembly, checkIfExists: true)
-    def truth = file(row.truth, checkIfExists: true)
-    def fastq_1 = row.fastq_1 ? file(row.fastq_1, checkIfExists: true) : null
-    def fastq_2 = row.fastq_2 ? file(row.fastq_2, checkIfExists: true) : null
-    def fastq_l = row.fastq_l ? file(row.fastq_l, checkIfExists: true) : null
+    def truth    = file(row.truth, checkIfExists: true)
+    def fastq_1  = row.fastq_1 ? file(row.fastq_1, checkIfExists: true) : null
+    def fastq_2  = row.fastq_2 ? file(row.fastq_2, checkIfExists: true) : null
+    def fastq_l  = row.fastq_l ? file(row.fastq_l, checkIfExists: true) : null
+    def sample   = [ id: row.sample, seq: assembly.getSimpleName() ]
 
-    return [ sample: row.sample, assembly: assembly, truth: truth, fastq_1: fastq_1, fastq_2: fastq_2, fastq_l: fastq_l ]
+    return [ sample: sample, assembly: assembly, truth: truth, fastq_1: fastq_1, fastq_2: fastq_2, fastq_l: fastq_l ]
 }
 
 // Function for getting the length of all contigs in a fasta file
@@ -247,26 +253,60 @@ def faLength(contigs){
 
 // Function for gathering assembly metrics
 def gatherMetrics(LinkedHashMap row){
+    // Define metrics
     def metrics            = row.value[0] ? row.value[0] : null
+
+    /*
+    ==============================================================
+        Default Nextclade Metrics
+    ==============================================================
+    */        
     def totalSubstitutions = metrics ? metrics.totalSubstitutions : null
     def totalDeletions     = metrics ? metrics.totalDeletions : null
-    def totalInsertions    = metrics ? metrics.totalInsertions : null
-    def totalMissing       = metrics ? metrics.totalMissing : null
     def totalNonACGTNs     = metrics ? metrics.totalNonACGTNs : null
-    def terminalMiss       = metrics ? ( metrics.nucleotideComposition.'-' ? metrics.nucleotideComposition.'-' : 0 ) : null
 
-    def alignLen           = metrics ? row.tlen - terminalMiss - totalMissing - totalNonACGTNs : null
-    def agreement          = metrics ? alignLen - totalSubstitutions - totalDeletions - totalInsertions : null
-    def completeness       = metrics ? 100 * alignLen / row.tlen : null
+    /*
+    ==============================================================
+        Modified Nextclade Metrics
+    ==============================================================
+    */    
+    // Missing data - Nextclade does not count sites in the sample that are missing from the truth termini
+    def termMissing        = metrics ? ( metrics.nucleotideComposition.'-' ? metrics.nucleotideComposition.'-' : 0 ) : null
+    def totalMissing       = metrics ? metrics.totalMissing + termMissing : null
+    // False insertions due to differences between the truth sequence and the reference used to create the assembly
+    def fauxInsertions     = metrics ? 0 : null
+    if( metrics ){ metrics.insertions.each{ fauxInsertions = fauxInsertions + it.ins.count( 'N' ) + it.ins.count( '-' ) } }
+    def totalInsertions    = metrics ? metrics.totalInsertions - fauxInsertions : null
+
+    /*
+    ==============================================================
+        New metrics
+    ==============================================================
+    */
+    // Alignment length - number of comparable sites between the truth and sample
+    def alignLen           = metrics ? row.truthLength - totalMissing : null
+    // Completeness     - percentage of the truth sequence captured by the sample
+    def completeness       = metrics ? 100 * alignLen / row.truthLength : null
+    // Accuracy         - percentage of agreements between the sample and the truth at comparable sites
+    def disagreement       = metrics ? totalSubstitutions + totalDeletions + totalInsertions + totalNonACGTNs : null
+    def agreement          = metrics ? alignLen - disagreement : null
     def accuracy           = metrics ? 100 * agreement / alignLen : null
 
-    return [ tlen: row.tlen,
-             sub: totalSubstitutions, 
-             del: totalDeletions, 
-             ins: totalInsertions, 
-             miss: totalMissing, 
-             other: totalNonACGTNs, 
-             term: terminalMiss, 
+    /*
+    ==============================================================
+        Final Metrics
+    ==============================================================
+    */    
+    return [ truthLength: row.truthLength,
+             substitutions: totalSubstitutions,
+             deletions: totalDeletions, 
+             insertions: totalInsertions,
+             fauxInsertions: fauxInsertions,
+             missing: totalMissing,
+             terminiMissing: termMissing,
+             nonACGTNs: totalNonACGTNs,
+             aligned: alignLen,
+             disagreements: disagreement,
              completeness: completeness,
              accuracy: accuracy ]
 }
@@ -298,9 +338,10 @@ process MINIMAP2_ASM {
     output:
     tuple val(sample), path("*.paf"),   emit: paf
 
-    shell:
+    script:
+    prefix = "${sample.id}_${sample.seq}"
     """
-    minimap2 -x asm20 ${truth} ${assembly} > ${sample}.paf
+    minimap2 -x asm20 ${truth} ${assembly} > ${prefix}.paf
     """
 }
 
@@ -314,23 +355,26 @@ process BEDTOOLS {
     tuple val(sample), path("*.fa"), val("${bed[2]-bed[0]}"), emit: fa
 
     script:
+    prefix = "${sample.id}_${sample.seq}"
     """
     echo "${bed.join('\t')}" > coords.bed
-    bedtools getfasta -fi ${assembly} -fo "${sample}.${bed[1]}-${bed[2]}.fa" -bed coords.bed
+    bedtools getfasta -fi ${assembly} -fo "${prefix}.${bed[1]}-${bed[2]}.fa" -bed coords.bed
     """
 }
 
 process NEXTCLADE {
     container 'docker.io/nextstrain/nextclade:3.9.1'
+    publishDir "${params.outdir}/nextclade/${prefix}/", mode: 'symlink'
 
     input:
     tuple val(sample), path(assembly), path(truth)
 
     output:
-    tuple val(sample), path("results/*.fasta"),   emit: fasta
-    tuple val(sample), path("results/*.json"), emit: json
+    tuple val(sample), path("results/*.fasta"), emit: fasta
+    tuple val(sample), path("results/*.json"),  emit: json
     
     script:
+    prefix = "${sample.id}_${sample.seq}"
     """
     nextclade run -r ${truth} -O results ${assembly}
     """
@@ -345,16 +389,14 @@ process SEQTK_SAMPLE {
     output:
     tuple val(sample), path("*.fastq.gz"), val(read_type), emit: reads
 
-    
-
     script:
     if( read_type == 'short' ){
-        cmd = "seqtk sample ${reads[0]} ${params.read_limit} > ${sample}_R1.fastq"
+        cmd = "seqtk sample ${reads[0]} ${params.read_limit} > ${sample.id}_R1.fastq"
         if( { reads[1] } ){
-            cmd = "${cmd} && seqtk sample ${reads[0]} ${params.read_limit} > ${sample}_R2.fastq"
+            cmd = "${cmd} && seqtk sample ${reads[0]} ${params.read_limit} > ${sample.id}_R2.fastq"
         }
     }else{
-        cmd = "seqtk sample ${reads} ${params.read_limit} > ${sample}_long.fastq"
+        cmd = "seqtk sample ${reads} ${params.read_limit} > ${sample.id}_long.fastq"
     }
     """
     $cmd
@@ -373,6 +415,7 @@ process BWA_MEM {
     tuple val(sample), path('*bam'), emit: aln
 
     script:
+    prefix = "${sample.id}_${sample.seq}"
     """
     # setup for pipe
     set -euxo pipefail
@@ -381,7 +424,7 @@ process BWA_MEM {
     bwa index ${truth}
 
     # run bwa mem, select only mapped reads, convert to .bam, and sort
-    bwa mem -t ${task.cpus} ${truth} ${reads[0]} ${reads[1] ? reads[1] : ''} | samtools view -b -F 4 - | samtools sort - > ${sample}.bam
+    bwa mem -t ${task.cpus} ${truth} ${reads[0]} ${reads[1] ? reads[1] : ''} | samtools view -b -F 4 - | samtools sort - > ${prefix}.bam
     """
 }
 
@@ -395,12 +438,13 @@ process MINIMAP2_MAP {
     tuple val(sample), path('*bam'), emit: aln
 
     script:
+    prefix = "${sample.id}_${sample.seq}"
     """
     # setup for pipe
     set -euxo pipefail
 
     # run bwa mem, select only mapped reads, convert to .bam, and sort
-    minimap2 -a -x map-ont -t ${task.cpus} ${truth} ${reads} | samtools view -b -F 4 - | samtools sort - > ${sample}.bam
+    minimap2 -a -x map-ont -t ${task.cpus} ${truth} ${reads} | samtools view -b -F 4 - | samtools sort - > ${prefix}.bam
     """
 }
 
@@ -414,8 +458,9 @@ process SAMTOOLS_COVERAGE {
     tuple val(sample), path("*.coverage.txt"), emit: coverage
 
     script:
+    prefix = "${sample.id}_${sample.seq}"
     """ 
     # gather read stats
-    samtools coverage ${sample}.bam > ${sample}.coverage.txt
+    samtools coverage ${bam} > ${prefix}.coverage.txt
     """
 }
